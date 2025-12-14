@@ -7,14 +7,14 @@ import plotly.express as px
 # --- CONFIGURATION ---
 st.set_page_config(
     page_title="Edge Vision Control Center",
-    page_icon="👁️",
+    page_icon="",
     layout="wide"
 )
 
 API_URL = "http://localhost:8000"
 MODELS = {
-    "⚡ MODE RAPIDE (Int8)": "models/model_int8.tflite",
-    "🐢 MODE PRÉCIS (Float32)": "models/model_float32.tflite"
+    " MODE RAPIDE (Int8)": "models/model_int8.tflite",
+    " MODE PRÉCIS (Float32)": "models/model_float32.tflite"
 }
 
 # --- FONCTIONS ---
@@ -26,13 +26,13 @@ def get_metrics():
 
 def send_ota(model_path):
     try:
-        with st.spinner(f"🚀 Déploiement OTA en cours : {model_path}..."):
+        with st.spinner(f" Déploiement OTA en cours : {model_path}..."):
             res = requests.post(f"{API_URL}/update-model", params={"model_path": model_path})
             if res.status_code == 200:
-                st.success("✅ Mise à jour réussie !")
+                st.success(" Mise à jour réussie !")
                 time.sleep(1) # Laisser le temps de lire
             else:
-                st.error("❌ Erreur serveur")
+                st.error(" Erreur serveur")
     except Exception as e:
         st.error(f"Erreur de connexion : {e}")
 
@@ -45,29 +45,29 @@ if "history_time" not in st.session_state:
     st.session_state.history_time = []
 
 # --- INTERFACE GRAPHIQUE ---
-st.title("👁️ Edge Vision : Centre de Contrôle")
+st.title(" Edge Vision : Centre de Contrôle")
 st.markdown("---")
 
 # Division de l'écran en 2 colonnes
 col_control, col_monitor = st.columns([1, 2])
 
 with col_control:
-    st.subheader("🎮 Commandes OTA")
+    st.subheader(" Commandes OTA")
     st.info("Changez le modèle d'IA à distance sans éteindre la caméra.")
     
     selected_model = st.radio("Choisir le modèle à déployer :", list(MODELS.keys()))
     
-    if st.button("🚀 LANCER LA MISE À JOUR (OTA)", use_container_width=True):
+    if st.button(" LANCER LA MISE À JOUR (OTA)", use_container_width=True):
         send_ota(MODELS[selected_model])
 
     st.markdown("---")
-    st.subheader("📡 État du Device")
+    st.subheader(" État du Device")
     
     # Placeholder pour les métriques textuelles
     metric_container = st.empty()
 
 with col_monitor:
-    st.subheader("📈 Performance Temps Réel")
+    st.subheader(" Performance Temps Réel")
     # Placeholder pour les graphiques
     chart_fps = st.empty()
     chart_lat = st.empty()
@@ -123,9 +123,9 @@ while True:
         
         # Note : On affiche Latence ou pas, selon la place, ici on met juste FPS pour l'exemple
         # Vous pouvez décommenter ci-dessous pour avoir le 2eme graph
-        # with chart_lat:
-        #     fig_lat = px.line(df, x="Temps", y="Latence (ms)", title="Latence Système", markers=True)
-        #     st.plotly_chart(fig_lat, use_container_width=True)
+        with chart_lat:
+            fig_lat = px.line(df, x="Temps", y="Latence (ms)", title="Latence Système", markers=True)
+            st.plotly_chart(fig_lat, use_container_width=True)
 
     else:
         metric_container.error("⚠️ Connexion perdue avec le Device Docker...")
