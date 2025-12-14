@@ -1,0 +1,15 @@
+artifact_uri: file:///home/viet/projet-10-edge-vision/notebooks/mlruns/991822181854806368/c97ed68429c24a33b08791f3e9ec4332/artifacts
+end_time: 1765214099848
+entry_point_name: ''
+experiment_id: '991822181854806368'
+lifecycle_stage: active
+run_id: c97ed68429c24a33b08791f3e9ec4332
+run_name: MobileNetV2_Quantization
+run_uuid: c97ed68429c24a33b08791f3e9ec4332
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1765214099815
+status: 3
+tags: []
+user_id: viet

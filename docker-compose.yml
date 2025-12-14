@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  # Notre "Faux Raspberry Pi"
+  edge-device:
+    build: .
+    container_name: raspberry_sim
+    ports:
+      - "8000:8000"
+    volumes:
+      # On lie les dossiers pour voir les logs ou changer les modèles depuis Windows
+      - ./models:/app/models
+      - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          # --- C'EST ICI QU'ON SIMULE LE PI ---
+          cpus: '0.50'     # 50% d'un seul cœur (votre PC en a 12 !)
+          memory: 512M     # 512 Mo de RAM (Comme un Pi Zero 2 ou un vieux Pi 3)
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=none # On force le CPU, on interdit le GPU NVIDIA

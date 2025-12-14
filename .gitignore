@@ -1,6 +1,12 @@
+# On ignore l'environnement virtuel et les caches
 venv/
 __pycache__/
 .ipynb_checkpoints/
-models/*.tflite
-mlruns/
-data/
+mlruns/       <-- On ne pousse pas MLflow (trop de petits fichiers)
+
+# --- DONNÉES ---
+data/         <-- On ignore la vidéo et les images (trop lourd / copyright)
+
+# --- MODÈLES ---
+# models/*.tflite  <-- EFFACEZ OU COMMENTEZ CETTE LIGNE !
+# On veut que les modèles soient sur GitHub
