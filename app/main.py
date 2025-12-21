@@ -7,6 +7,7 @@ import os
 import io
 from app.inference import EdgeDetector
 
+
 app = FastAPI(title="Edge Vision System")
 
 # --- Config ---
