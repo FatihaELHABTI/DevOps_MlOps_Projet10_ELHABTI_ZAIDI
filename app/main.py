@@ -49,16 +49,22 @@ def video_processing_loop():
                 count = 0
                 h, w, _ = frame.shape
                 for i in range(len(scores)):
-                    if scores[i] > 0.15:  
+                    # 1. ON BAISSE LE SEUIL AU MINIMUM (10%)
+                    # 2. ON ENLÈVE LE FILTRE DE CLASSE (On veut tout voir)
+                    if scores[i] > 0.10:  
                         count += 1
+                        
                         ymin, xmin, ymax, xmax = boxes[i]
                         start = (int(xmin * w), int(ymin * h))
                         end = (int(xmax * w), int(ymax * h))
                         
+                        # On change la couleur en ROUGE pour bien voir (0, 0, 255) en BGR
                         cv2.rectangle(frame, start, end, (0, 255, 0), 2)
-                        label = f"ID {int(classes[i])}: {scores[i]:.2f}"
+                        
+                        # On affiche L'ID et le SCORE
+                        label = f"ID {int(classes[i])} ({scores[i]*100:.0f}%)"
                         cv2.putText(frame, label, (start[0], start[1]-10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
                 # 3. Mise à jour Télémétrie
                 telemetry["latency_ms"] = latency
