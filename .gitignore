@@ -13,3 +13,8 @@ data/         <-- On ignore la vidéo et les images (trop lourd / copyright)
 /data
 /datasets
 /models
+
+/.dvc/config
+/.dvc/vdrive-creds.json
+vdrive-creds.json
+venv
