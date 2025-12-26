@@ -1,0 +1,214 @@
+name: CI/CD Minimal - Edge AI
+
+on:
+  push:
+    branches: [ main, develop, feature/* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # Job 1: Vérification basique du code
+  basic-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      
+      - name: Check Python syntax
+        run: |
+          python -m py_compile $(find . -name "*.py" -not -path "./venv/*" -not -path "./.venv/*")
+      
+      - name: List project structure
+        run: |
+          echo "📁 Project structure:"
+          tree -L 3 -I 'venv|__pycache__|*.pyc|.git' || ls -R
+
+  # Job 2: Vérifier que DVC est bien configuré
+  check-dvc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Check DVC configuration
+        run: |
+          if [ -d ".dvc" ]; then
+            echo "✅ DVC is initialized"
+            cat .dvc/config || echo "No remote configured yet"
+          else
+            echo "❌ DVC not initialized"
+            exit 1
+          fi
+      
+      - name: Check for .dvc files
+        run: |
+          echo "📦 DVC tracked files:"
+          find . -name "*.dvc" || echo "No DVC files found"
+
+  # Job 3: Vérifier les modèles (sans les télécharger)
+  check-models:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Check model references
+        run: |
+          echo "🔍 Checking for model files..."
+          if [ -f "models/model_int8.tflite.dvc" ]; then
+            echo "✅ Int8 model tracked in DVC"
+            cat models/model_int8.tflite.dvc
+          fi
+          
+          if [ -f "models/model_float32.tflite.dvc" ]; then
+            echo "✅ Float32 model tracked in DVC"
+            cat models/model_float32.tflite.dvc
+          fi
+
+  # Job 4: Vérifier Docker (si Dockerfile existe)
+  check-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Check Dockerfiles
+        run: |
+          echo "🐳 Checking for Dockerfiles..."
+          
+          if [ -f "Dockerfile" ]; then
+            echo "✅ Dockerfile found"
+            echo "Content:"
+            head -20 Dockerfile
+          else
+            echo "⚠️  No Dockerfile found"
+          fi
+          
+          if [ -f "docker-compose.yml" ]; then
+            echo "✅ docker-compose.yml found"
+          else
+            echo "⚠️  No docker-compose.yml found"
+          fi
+      
+      - name: Validate docker-compose (if exists)
+        run: |
+          if [ -f "docker-compose.yml" ]; then
+            docker-compose config || echo "⚠️  docker-compose validation failed"
+          fi
+
+  # Job 5: Vérifier la documentation
+  check-documentation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Check README
+        run: |
+          if [ -f "README.md" ]; then
+            echo "✅ README.md exists"
+            wc -l README.md
+          else
+            echo "❌ No README.md found"
+            exit 1
+          fi
+      
+      - name: Check for documentation
+        run: |
+          echo "📚 Documentation files:"
+          find . -name "*.md" -o -name "*.pdf" | grep -v node_modules | grep -v venv || echo "No documentation found"
+
+  # Job 6: Generate project report
+  generate-report:
+    runs-on: ubuntu-latest
+    needs: [basic-checks, check-dvc, check-models, check-docker, check-documentation]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Generate project health report
+        run: |
+          cat << 'EOF' > project-report.md
+          # 📊 Project Health Report
+          
+          ## ✅ Checks Passed
+          - Python syntax validation
+          - DVC configuration
+          - Project structure
+          - Documentation presence
+          
+          ## 📁 Project Statistics
+          EOF
+          
+          echo "- **Python files**: $(find . -name '*.py' -not -path '*/venv/*' | wc -l)" >> project-report.md
+          echo "- **Lines of code**: $(find . -name '*.py' -not -path '*/venv/*' -exec cat {} \; | wc -l)" >> project-report.md
+          echo "- **DVC files**: $(find . -name '*.dvc' | wc -l)" >> project-report.md
+          
+          echo "" >> project-report.md
+          echo "## 🚀 Next Steps" >> project-report.md
+          echo "- [ ] Add unit tests" >> project-report.md
+          echo "- [ ] Add integration tests" >> project-report.md
+          echo "- [ ] Configure DVC remote storage" >> project-report.md
+          echo "- [ ] Add performance benchmarks" >> project-report.md
+          
+          cat project-report.md
+      
+      - name: Upload report
+        uses: actions/upload-artifact@v3
+        with:
+          name: project-report
+          path: project-report.md
+      
+      - name: Comment on PR (if PR)
+        uses: actions/github-script@v6
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('project-report.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
+
+  # Job 7: Security scan basique
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Check for secrets in code
+        run: |
+          echo "🔐 Scanning for potential secrets..."
+          
+          # Recherche de patterns suspects
+          if grep -r "password\s*=\s*['\"]" . --exclude-dir=venv --exclude-dir=.git 2>/dev/null; then
+            echo "⚠️  Found hardcoded password"
+          fi
+          
+          if grep -r "api[_-]key\s*=\s*['\"]" . --exclude-dir=venv --exclude-dir=.git 2>/dev/null; then
+            echo "⚠️  Found hardcoded API key"
+          fi
+          
+          echo "✅ Basic security scan completed"
+      
+      - name: Check dependencies for known vulnerabilities
+        run: |
+          if [ -f "requirements.txt" ]; then
+            pip install safety
+            safety check -r requirements.txt || echo "⚠️  Some vulnerabilities found (non-blocking)"
+          fi
