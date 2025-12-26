@@ -126,7 +126,7 @@ jobs:
       
       - name: Check for documentation
         run: |
-          echo " Documentation files:"
+          echo "📚 Documentation files:"
           find . -name "*.md" -o -name "*.pdf" | grep -v node_modules | grep -v venv | grep -v .dvc || echo "Limited documentation found"
 
   generate-report:
@@ -156,7 +156,7 @@ jobs:
           echo "- **DVC files**: $(find . -name '*.dvc' -type f | wc -l)" >> project-report.md
           
           echo "" >> project-report.md
-          echo "##  Recommendations" >> project-report.md
+          echo "## 🚀 Recommendations" >> project-report.md
           echo "- Add unit tests with pytest" >> project-report.md
           echo "- Add integration tests" >> project-report.md
           echo "- Configure DVC remote storage" >> project-report.md
@@ -170,6 +170,21 @@ jobs:
         with:
           name: project-report
           path: project-report.md
+      
+      - name: Comment PR with report
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('project-report.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
 
   security-scan:
     runs-on: ubuntu-latest
@@ -179,7 +194,7 @@ jobs:
       
       - name: Check for hardcoded secrets
         run: |
-          echo "🔐 Scanning for potential secrets..."
+          echo " Scanning for potential secrets..."
           
           # Check for common secret patterns
           SECRET_FOUND=0
