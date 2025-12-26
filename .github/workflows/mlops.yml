@@ -1,0 +1,673 @@
+name: MLOps Edge Security Pipeline - Google Drive Version
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'app/**'
+      - 'models.dvc'
+      - 'data.dvc'
+      - 'scripts/**'
+  
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+
+env:
+  MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI || 'http://localhost:5000' }}
+
+jobs:
+  # JOB 1: SETUP AVEC DVC Google Drive
+  setup-with-dvc:
+    runs-on: ubuntu-latest
+    outputs:
+      models_exist: ${{ steps.check-models.outputs.exist }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install DVC with Google Drive support
+      run: |
+        pip install "dvc[gdrive]"
+        pip install PyDrive2  # Required for Google Drive auth
+        
+        # Verify installation
+        dvc version
+        python -c "import pydrive2; print('PyDrive2 available')"
+    
+    - name: Configure Google Drive credentials
+      run: |
+        echo "Configuring Google Drive credentials..."
+        
+        # Create directory for DVC config
+        mkdir -p ~/.config/dvc/tmp
+        
+        # Write the credentials JSON from GitHub secret
+        if [ -n "${{ secrets.GDRIVE_CREDENTIALS_JSON }}" ]; then
+          echo "${{ secrets.GDRIVE_CREDENTIALS_JSON }}" > ~/.config/dvc/tmp/gdrive-user-credentials.json
+          echo "Credentials file created"
+          
+          # Verify the JSON is valid
+          python -c "
+          import json
+          with open('/home/runner/.config/dvc/tmp/gdrive-user-credentials.json') as f:
+              creds = json.load(f)
+          print(f'Credentials type: {creds.get(\"type\")}')
+          print(f'Client ID: {creds.get(\"client_id\", \"missing\")[:30]}...')
+          "
+        else
+          echo "ERROR: GDRIVE_CREDENTIALS_JSON secret is not set"
+          echo "Please add this secret to GitHub:"
+          echo "1. Go to Settings > Secrets and variables > Actions"
+          echo "2. Add secret named GDRIVE_CREDENTIALS_JSON"
+          echo "3. Paste your full gdrive-user-credentials.json content"
+          exit 1
+        fi
+        
+        # Configure DVC remote if URL is provided
+        if [ -n "${{ secrets.DVC_REMOTE_URL }}" ]; then
+          dvc remote add -d myremote "${{ secrets.DVC_REMOTE_URL }}"
+          echo "DVC remote configured: ${{ secrets.DVC_REMOTE_URL }}"
+        elif [ -f ".dvc/config" ]; then
+          echo "Using existing DVC config from repository"
+        else
+          echo "WARNING: No DVC remote configured"
+        fi
+    
+    - name: Pull models from DVC
+      run: |
+        echo "Pulling models from DVC remote..."
+        
+        # First, check if we have .dvc files
+        if [ -f "models.dvc" ]; then
+          echo "Found models.dvc, pulling models..."
+          
+          # Set environment variable for Google Drive auth
+          export GDRIVE_CREDENTIALS_DATA="${{ secrets.GDRIVE_CREDENTIALS_JSON }}"
+          
+          # Try to pull
+          dvc pull models.dvc -v
+          
+          # Check result
+          if [ $? -eq 0 ]; then
+            echo "SUCCESS: Models pulled from DVC"
+          else
+            echo "ERROR: Failed to pull from DVC"
+            echo "Troubleshooting steps:"
+            echo "1. Check GDRIVE_CREDENTIALS_JSON secret is valid JSON"
+            echo "2. Verify the refresh_token is not expired"
+            echo "3. Check DVC remote URL is correct"
+            
+            # Try alternative method
+            echo "Trying alternative pull method..."
+            dvc pull --force
+          fi
+        else
+          echo "ERROR: models.dvc file not found"
+          echo "Available .dvc files:"
+          ls -la *.dvc 2>/dev/null || echo "No .dvc files found"
+        fi
+        
+        # Check what models we have
+        echo "Models directory contents:"
+        ls -la models/ 2>/dev/null || echo "models/ directory does not exist"
+        
+        # Create models directory if it doesn't exist
+        mkdir -p models
+    
+    - name: Verify models exist
+      id: check-models
+      run: |
+        echo "Verifying model files..."
+        
+        # Count .tflite files
+        model_count=0
+        if [ -d "models" ]; then
+          model_count=$(find models -name "*.tflite" -type f | wc -l)
+          echo "Found $model_count .tflite files"
+          
+          # List them with sizes
+          for model in models/*.tflite; do
+            if [ -f "$model" ]; then
+              size=$(stat -c%s "$model" 2>/dev/null || stat -f%z "$model" 2>/dev/null)
+              size_mb=$(echo "scale=2; $size / 1048576" | bc)
+              echo "  - $(basename $model): ${size_mb}MB"
+            fi
+          done
+        fi
+        
+        if [ $model_count -gt 0 ]; then
+          echo "exist=true" >> $GITHUB_OUTPUT
+          echo "SUCCESS: Models are available"
+        else
+          echo "exist=false" >> $GITHUB_OUTPUT
+          echo "WARNING: No .tflite models found"
+          
+          # Try one more time with explicit find
+          echo "Searching recursively:"
+          find . -name "*.tflite" -type f 2>/dev/null || echo "No .tflite files found anywhere"
+        fi
+    
+    - name: Install project dependencies
+      if: steps.check-models.outputs.exist == 'true'
+      run: |
+        # Create minimal setup.py if it doesn't exist
+        if [ ! -f "setup.py" ]; then
+          cat > setup.py << 'EOF'
+          from setuptools import setup, find_packages
+          setup(
+              name="edge_security",
+              version="1.0.0",
+              packages=find_packages(),
+          )
+          EOF
+        fi
+        
+        # Install in development mode
+        pip install -e .
+        
+        # Install requirements
+        if [ -f "requirements.txt" ]; then
+          pip install -r requirements.txt
+        else
+          # Install core dependencies
+          pip install opencv-python numpy tflite-runtime fastapi uvicorn streamlit mlflow
+        fi
+        
+        # Verify EdgeDetector can be imported
+        python -c "
+        import sys
+        print(f'Python path: {sys.path[:3]}')
+        try:
+            from app.inference import EdgeDetector
+            print('SUCCESS: EdgeDetector imported')
+            
+            # Quick test if models exist
+            import os
+            model_files = [f for f in os.listdir('models') if f.endswith('.tflite')]
+            if model_files:
+                print(f'Available models: {model_files}')
+                # Try loading first model
+                test_model = f'models/{model_files[0]}'
+                detector = EdgeDetector(test_model)
+                print(f'SUCCESS: Loaded {test_model}')
+                print(f'  Input size: {detector.input_width}x{detector.input_height}')
+                print(f'  Quantized: {detector.is_quantized}')
+            else:
+                print('WARNING: No model files found to test')
+        except Exception as e:
+            print(f'ERROR: {e}')
+            import traceback
+            traceback.print_exc()
+        "
+    
+    - name: Run basic tests
+      if: steps.check-models.outputs.exist == 'true'
+      run: |
+        echo "Running basic functionality tests..."
+        
+        cat > basic_test.py << 'EOF'
+        import sys
+        import os
+        import numpy as np
+        
+        sys.path.insert(0, os.getcwd())
+        
+        print("Basic Test Suite")
+        print("================")
+        
+        # Test 1: Import
+        try:
+            from app.inference import EdgeDetector
+            print("✓ Import successful")
+        except ImportError as e:
+            print(f"✗ Import failed: {e}")
+            sys.exit(1)
+        
+        # Test 2: Check model files
+        model_files = []
+        if os.path.exists('models'):
+            model_files = [f for f in os.listdir('models') if f.endswith('.tflite')]
+        
+        if not model_files:
+            print("✗ No .tflite files found in models/")
+            print(f"Contents of models/: {os.listdir('models') if os.path.exists('models') else 'Directory does not exist'}")
+            sys.exit(1)
+        
+        print(f"✓ Found {len(model_files)} model(s): {model_files}")
+        
+        # Test 3: Load and test each model
+        for model_file in model_files:
+            model_path = f"models/{model_file}"
+            print(f"\nTesting {model_file}:")
+            
+            try:
+                detector = EdgeDetector(model_path)
+                print(f"  ✓ Loaded successfully")
+                print(f"    Input: {detector.input_width}x{detector.input_height}")
+                print(f"    Quantized: {detector.is_quantized}")
+                
+                # Quick inference test
+                test_img = np.random.randint(0, 255, (320, 320, 3), dtype=np.uint8)
+                boxes, classes, scores, latency = detector.predict(test_img)
+                print(f"    Test inference: {latency:.1f}ms, {len(scores)} detections")
+                
+            except Exception as e:
+                print(f"  ✗ Failed to load/test: {e}")
+        
+        print("\n" + "="*50)
+        print("ALL BASIC TESTS COMPLETED")
+        EOF
+        
+        python basic_test.py
+
+  # JOB 2: PERFORMANCE BENCHMARK
+  performance-benchmark:
+    needs: setup-with-dvc
+    if: needs.setup-with-dvc.outputs.models_exist == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup environment
+      run: |
+        pip install -e .
+        pip install opencv-python numpy pandas
+        
+        # Pull models if needed (using cache from previous job)
+        if [ -f "models.dvc" ] && [ ! -f "models/model_int8.tflite" ]; then
+          pip install "dvc[gdrive]"
+          echo "${{ secrets.GDRIVE_CREDENTIALS_JSON }}" > ~/.config/dvc/tmp/gdrive-user-credentials.json
+          dvc pull models.dvc
+        fi
+    
+    - name: Run performance benchmark
+      run: |
+        cat > benchmark.py << 'EOF'
+        import sys
+        import os
+        import json
+        import numpy as np
+        import time
+        
+        sys.path.insert(0, os.getcwd())
+        from app.inference import EdgeDetector
+        
+        print("Performance Benchmark")
+        print("====================")
+        
+        def benchmark_model(model_path, iterations=30):
+            """Benchmark a single model"""
+            print(f"\nBenchmarking {os.path.basename(model_path)}...")
+            
+            if not os.path.exists(model_path):
+                print(f"  ERROR: File not found")
+                return None
+            
+            try:
+                # Load model
+                detector = EdgeDetector(model_path)
+                
+                # Create test image (mimicking surveillance footage)
+                test_img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+                
+                # Warm-up
+                for _ in range(3):
+                    detector.predict(test_img)
+                
+                # Benchmark
+                latencies = []
+                for i in range(iterations):
+                    start_time = time.perf_counter()
+                    boxes, classes, scores, latency = detector.predict(test_img)
+                    latencies.append(latency)
+                    
+                    if (i + 1) % 10 == 0:
+                        print(f"  Iteration {i+1}/{iterations}: {latency:.1f}ms")
+                
+                # Calculate statistics
+                avg_latency = np.mean(latencies)
+                fps = 1000 / avg_latency if avg_latency > 0 else 0
+                
+                result = {
+                    "model": os.path.basename(model_path),
+                    "size_mb": os.path.getsize(model_path) / (1024*1024),
+                    "avg_latency_ms": float(avg_latency),
+                    "fps": float(fps),
+                    "min_latency": float(np.min(latencies)),
+                    "max_latency": float(np.max(latencies)),
+                    "std_latency": float(np.std(latencies)),
+                    "iterations": iterations,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+                
+                print(f"  Result: {fps:.1f} FPS, {avg_latency:.1f} ± {np.std(latencies):.1f}ms")
+                
+                # Security company requirements
+                if fps >= 15 and avg_latency <= 100:
+                    print(f"  STATUS: MEETS PRODUCTION REQUIREMENTS")
+                else:
+                    print(f"  STATUS: DOES NOT MEET REQUIREMENTS (min 15 FPS, max 100ms)")
+                
+                return result
+                
+            except Exception as e:
+                print(f"  ERROR: {e}")
+                return None
+        
+        # Benchmark all models
+        results = []
+        if os.path.exists('models'):
+            for model_file in os.listdir('models'):
+                if model_file.endswith('.tflite'):
+                    result = benchmark_model(f"models/{model_file}", 25)
+                    if result:
+                        results.append(result)
+        
+        # Save results
+        with open('benchmark_results.json', 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        print(f"\n{'='*50}")
+        print(f"BENCHMARK COMPLETE: {len(results)} models tested")
+        
+        # Summary
+        if results:
+            print("\nSUMMARY:")
+            for r in results:
+                deployable = r['fps'] >= 15 and r['avg_latency_ms'] <= 100
+                status = "✓ READY" if deployable else "✗ NOT READY"
+                print(f"{r['model']}: {r['fps']:.1f} FPS, {r['avg_latency_ms']:.1f}ms - {status}")
+        
+        # Output for next job
+        if results:
+            print(f"::set-output name=benchmark_json::{json.dumps(results)}")
+        EOF
+        
+        python benchmark.py
+      
+      env:
+        TF_ENABLE_ONEDNN_OPTS: "0"
+    
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: benchmark_results.json
+        retention-days: 7
+
+  # JOB 3: MLFLOW REGISTRATION
+  mlflow-registration:
+    needs: performance-benchmark
+    if: success()
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout and setup
+      uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        pip install -e .
+        pip install mlflow
+        
+        # Pull models if not already present
+        if [ -f "models.dvc" ] && [ ! -d "models" ] || [ ! "$(ls -A models 2>/dev/null)" ]; then
+          pip install "dvc[gdrive]"
+          mkdir -p ~/.config/dvc/tmp
+          echo "${{ secrets.GDRIVE_CREDENTIALS_JSON }}" > ~/.config/dvc/tmp/gdrive-user-credentials.json
+          dvc pull models.dvc
+        fi
+    
+    - name: Register models in MLflow
+      env:
+        MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI || 'http://localhost:5000' }}
+      run: |
+        cat > register_models.py << 'EOF'
+        import mlflow
+        import os
+        import json
+        from datetime import datetime
+        
+        print("MLflow Model Registration")
+        print("=========================")
+        
+        # Load benchmark results
+        benchmark_file = 'benchmark_results.json'
+        if os.path.exists(benchmark_file):
+            with open(benchmark_file) as f:
+                benchmark_data = json.load(f)
+            print(f"Loaded benchmark data for {len(benchmark_data)} models")
+        else:
+            print("WARNING: No benchmark results found")
+            benchmark_data = []
+        
+        # Setup MLflow
+        try:
+            mlflow.set_tracking_uri(os.environ.get('MLFLOW_TRACKING_URI', 'http://localhost:5000'))
+            mlflow.set_experiment("Edge_Security_Models")
+            print(f"Connected to MLflow at: {mlflow.get_tracking_uri()}")
+        except Exception as e:
+            print(f"ERROR connecting to MLflow: {e}")
+            print("Continuing with local MLflow...")
+        
+        registered_count = 0
+        
+        # Process each model
+        for model_file in os.listdir('models'):
+            if not model_file.endswith('.tflite'):
+                continue
+            
+            model_path = f"models/{model_file}"
+            model_name = model_file.replace('.tflite', '')
+            
+            print(f"\nProcessing: {model_file}")
+            
+            # Find benchmark data for this model
+            model_benchmark = None
+            for bm in benchmark_data:
+                if bm['model'] == model_file:
+                    model_benchmark = bm
+                    break
+            
+            try:
+                run_name = f"{model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                
+                with mlflow.start_run(run_name=run_name):
+                    # Log parameters
+                    mlflow.log_param("model_name", model_name)
+                    mlflow.log_param("quantization", "int8" if "int8" in model_name.lower() else "float32")
+                    mlflow.log_param("framework", "tensorflow_lite")
+                    mlflow.log_param("git_commit", "${{ github.sha }}")
+                    mlflow.log_param("workflow_id", "${{ github.run_id }}")
+                    
+                    # Log metrics from benchmark
+                    if model_benchmark:
+                        mlflow.log_metric("fps", model_benchmark['fps'])
+                        mlflow.log_metric("latency_ms", model_benchmark['avg_latency_ms'])
+                        mlflow.log_metric("model_size_mb", model_benchmark['size_mb'])
+                        mlflow.log_metric("min_latency", model_benchmark['min_latency'])
+                        mlflow.log_metric("max_latency", model_benchmark['max_latency'])
+                        
+                        # Business logic metric
+                        deployable = model_benchmark['fps'] >= 15 and model_benchmark['avg_latency_ms'] <= 100
+                        mlflow.log_metric("production_ready", 1.0 if deployable else 0.0)
+                    
+                    # Log tags
+                    mlflow.set_tags({
+                        "project": "edge_intrusion_detection",
+                        "application": "security_surveillance",
+                        "author": "${{ github.actor }}",
+                        "environment": "${{ github.event.inputs.environment || 'ci' }}",
+                        "event_type": "${{ github.event_name }}"
+                    })
+                    
+                    # Log the model file
+                    mlflow.log_artifact(model_path, "models")
+                    print(f"  Logged model artifact")
+                    
+                    # Log requirements if exists
+                    if os.path.exists("requirements.txt"):
+                        mlflow.log_artifact("requirements.txt")
+                    
+                    # Log inference script
+                    if os.path.exists("app/inference.py"):
+                        mlflow.log_artifact("app/inference.py", "code")
+                    
+                    registered_count += 1
+                    print(f"  SUCCESS: Registered in run {mlflow.active_run().info.run_id}")
+                    
+            except Exception as e:
+                print(f"  ERROR registering {model_file}: {e}")
+        
+        print(f"\n{'='*50}")
+        print(f"REGISTRATION COMPLETE: {registered_count} models registered")
+        
+        # Save registration report
+        report = {
+            "total_registered": registered_count,
+            "models": [f for f in os.listdir('models') if f.endswith('.tflite')],
+            "timestamp": datetime.now().isoformat(),
+            "mlflow_uri": os.environ.get('MLFLOW_TRACKING_URI', 'local')
+        }
+        
+        with open('registration_report.json', 'w') as f:
+            json.dump(report, f, indent=2)
+        EOF
+        
+        python register_models.py
+    
+    - name: Generate MLflow report
+      run: |
+        echo "# MLflow Model Registration Report" > mlflow_report.md
+        echo "**Date:** $(date)" >> mlflow_report.md
+        echo "**Workflow:** ${{ github.run_id }}" >> mlflow_report.md
+        echo "" >> mlflow_report.md
+        
+        if [ -f "registration_report.json" ]; then
+          python -c "
+          import json
+          with open('registration_report.json') as f:
+              report = json.load(f)
+          
+          print(f'## Summary')
+          print(f'Total models registered: **{report[\"total_registered\"]}**')
+          print(f'MLflow URI: `{report[\"mlflow_uri\"]}`')
+          print(f'')
+          print(f'## Registered Models')
+          for model in report['models']:
+              print(f'- {model}')
+          print(f'')
+          print(f'## Next Steps')
+          print(f'1. View models in MLflow UI: {report[\"mlflow_uri\"]}')
+          print(f'2. Navigate to experiment: Edge_Security_Models')
+          print(f'3. Compare model performance metrics')
+          "
+        else
+          echo "No registration report available" >> mlflow_report.md
+        fi >> mlflow_report.md
+        
+        cat mlflow_report.md
+
+  # JOB 4: GENERATE FINAL REPORT
+  final-report:
+    needs: [setup-with-dvc, performance-benchmark, mlflow-registration]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Generate comprehensive report
+      run: |
+        echo "# MLOps Pipeline Execution Report" > final_report.md
+        echo "**Project:** Edge Security Intrusion Detection" >> final_report.md
+        echo "**Generated:** $(date)" >> final_report.md
+        echo "**Pipeline:** ${{ github.workflow }}" >> final_report.md
+        echo "**Run ID:** ${{ github.run_id }}" >> final_report.md
+        echo "" >> final_report.md
+        
+        echo "## Executive Summary" >> final_report.md
+        echo "This report summarizes the automated MLOps pipeline execution for edge AI model deployment." >> final_report.md
+        echo "" >> final_report.md
+        
+        echo "## Job Execution Status" >> final_report.md
+        echo "- **Setup with DVC:** ${{ needs.setup-with-dvc.result }}" >> final_report.md
+        echo "- **Performance Benchmark:** ${{ needs.performance-benchmark.result }}" >> final_report.md
+        echo "- **MLflow Registration:** ${{ needs.mlflow-registration.result }}" >> final_report.md
+        echo "" >> final_report.md
+        
+        echo "## Model Performance Analysis" >> final_report.md
+        if [ -f "benchmark_results.json" ]; then
+          python -c "
+          import json
+          
+          with open('benchmark_results.json') as f:
+              data = json.load(f)
+          
+          print('| Model | Size (MB) | FPS | Latency (ms) | Production Ready |')
+          print('|-------|-----------|-----|--------------|------------------|')
+          
+          for model in data:
+              name = model['model']
+              size = model['size_mb']
+              fps = model['fps']
+              latency = model['avg_latency_ms']
+              
+              ready = fps >= 15 and latency <= 100
+              ready_text = '✅ YES' if ready else '❌ NO'
+              
+              print(f'| {name} | {size:.1f} | {fps:.1f} | {latency:.1f} | {ready_text} |')
+          
+          print('')
+          print('**Production Criteria:** FPS ≥ 15, Latency ≤ 100ms')
+          "
+        else
+          echo "No benchmark data available" >> final_report.md
+        fi >> final_report.md
+        
+        echo "" >> final_report.md
+        echo "## DVC Configuration" >> final_report.md
+        echo "**Remote Type:** ${{ secrets.DVC_REMOTE_TYPE || 'Not configured' }}" >> final_report.md
+        echo "**Remote URL:** ${{ secrets.DVC_REMOTE_URL || 'Not configured' }}" >> final_report.md
+        echo "**Status:** $(if [ '${{ needs.setup-with-dvc.result }}' = 'success' ]; then echo 'Connected successfully'; else echo 'Connection failed'; fi)" >> final_report.md
+        echo "" >> final_report.md
+        
+        echo "## MLflow Configuration" >> final_report.md
+        echo "**Tracking URI:** ${{ secrets.MLFLOW_TRACKING_URI || 'http://localhost:5000' }}" >> final_report.md
+        echo "**Experiment:** Edge_Security_Models" >> final_report.md
+        echo "" >> final_report.md
+        
+        echo "## Recommendations" >> final_report.md
+        echo "1. **For Production:** Deploy models with FPS ≥ 15 and latency ≤ 100ms" >> final_report.md
+        echo "2. **Model Optimization:** Consider quantization for edge devices" >> final_report.md
+        echo "3. **Monitoring:** Implement real-time performance monitoring" >> final_report.md
+        echo "4. **Version Control:** All models are versioned in MLflow for traceability" >> final_report.md
+        
+        cat final_report.md
+    
+    - name: Upload all artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: mlops-pipeline-outputs
+        path: |
+          final_report.md
+          benchmark_results.json
+          registration_report.json
+          mlflow_report.md
+        retention-days: 30
