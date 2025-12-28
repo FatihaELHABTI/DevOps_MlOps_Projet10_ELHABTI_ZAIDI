@@ -8,11 +8,14 @@ on:
   workflow_dispatch:
 
 env:
-  MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
   PYTHON_VERSION: "3.11"
-  DVC_REMOTE_NAME: "vdrive"
+  # Nom de votre remote DVC
+  DVC_REMOTE_NAME: "vdrive" 
 
 jobs:
+  # -----------------------------------------------------------
+  # JOB 1 : PRÉPARATION ET TÉLÉCHARGEMENT DES DONNÉES (DVC)
+  # -----------------------------------------------------------
   setup-and-data:
     name: 1. Data & Environment Setup
     runs-on: ubuntu-latest
@@ -27,24 +30,29 @@ jobs:
           cache: pip
 
       - name: Install DVC
-        run: pip install "dvc[gdrive]==3.41.0"
+        run: pip install "dvc[gdrive]"
 
       - name: Pull Models from DVC
         env:
           GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS_JSON }}
         run: |
           mkdir -p ~/.dvc
-          echo "$GDRIVE_CREDENTIALS" > ~/.dvc/gdrive_service_account.json
-          dvc remote modify --local ${{ env.DVC_REMOTE_NAME }} gdrive_use_service_account true
-          dvc remote modify --local ${{ env.DVC_REMOTE_NAME }} gdrive_service_account_json_file_path ~/.dvc/gdrive_service_account.json
-          dvc pull models.dvc || echo "DVC pull failed, continuing..."
+          echo "$GDRIVE_CREDENTIALS" > gdrive_user_credentials.json
+          
+          dvc remote modify --local ${{ env.DVC_REMOTE_NAME }} gdrive_use_service_account false
+          dvc remote modify --local ${{ env.DVC_REMOTE_NAME }} gdrive_user_credentials_file gdrive_user_credentials.json
+          
+          dvc pull models.dvc
 
-      - name: Upload Models
+      - name: Upload Models Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: edge-models
           path: models/
 
+  # -----------------------------------------------------------
+  # JOB 2 : BENCHMARK SUR SERVEUR CLOUD (x86) - Modèle Lourd
+  # -----------------------------------------------------------
   benchmark-x86-fp32:
     name: 2. x86 Cloud - FP32
     needs: setup-and-data
@@ -61,7 +69,7 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install "numpy<2" psutil
-          pip install tflite-runtime
+          pip install tensorflow-cpu 
       - name: Run Benchmark
         run: |
           mkdir -p results
@@ -74,6 +82,9 @@ jobs:
           name: x86-fp32-results
           path: results/x86_fp32.json
 
+  # -----------------------------------------------------------
+  # JOB 3 : BENCHMARK SUR SERVEUR CLOUD (x86) - Modèle Optimisé
+  # -----------------------------------------------------------
   benchmark-x86-int8:
     name: 3. x86 Cloud - INT8
     needs: setup-and-data
@@ -90,7 +101,7 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install "numpy<2" psutil
-          pip install tflite-runtime
+          pip install tensorflow-cpu
       - name: Run Benchmark
         run: |
           mkdir -p results
@@ -103,10 +114,14 @@ jobs:
           name: x86-int8-results
           path: results/x86_int8.json
 
+  # -----------------------------------------------------------
+  # JOB 4 : BENCHMARK SUR ARM64 (Simulation Raspberry Pi)
+  # -----------------------------------------------------------
   benchmark-arm64-int8:
     name: 4. ARM64 Edge - INT8 (Native)
     needs: setup-and-data
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04-arm 
+    continue-on-error: true 
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -132,6 +147,9 @@ jobs:
           name: arm64-int8-results
           path: results/arm64_int8.json
 
+  # -----------------------------------------------------------
+  # JOB 5 : GÉNÉRATION DU RAPPORT FINAL (Modifié pour Memory)
+  # -----------------------------------------------------------
   reporting:
     name: 5. Real Performance Dashboard
     needs:
@@ -145,7 +163,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install Dependencies
-        run: pip install matplotlib pandas
+        run: pip install matplotlib pandas tabulate
       - name: Download All Results
         uses: actions/download-artifact@v4
         with:
@@ -159,41 +177,51 @@ jobs:
           import matplotlib.pyplot as plt
           from pathlib import Path
           from datetime import datetime
+          import os
 
           def load(path):
-              with open(path) as f:
-                  return json.load(f)
+              if os.path.exists(path):
+                  with open(path) as f:
+                      return json.load(f)
+              return None
 
           fp32 = load("all-results/x86-fp32-results/x86_fp32.json")
           x86i = load("all-results/x86-int8-results/x86_int8.json")
           armi = load("all-results/arm64-int8-results/arm64_int8.json")
 
-          df = pd.DataFrame({
-              "x86 FP32": [fp32["avg_latency_ms"], fp32["fps"], fp32["model_size_mb"], fp32["peak_memory_mb"]],
-              "x86 INT8": [x86i["avg_latency_ms"], x86i["fps"], x86i["model_size_mb"], x86i["peak_memory_mb"]],
-              "ARM64 INT8": [armi["avg_latency_ms"], armi["fps"], armi["model_size_mb"], armi["peak_memory_mb"]],
-          }, index=["Latency (ms)", "FPS", "Model Size (MB)", "Peak Memory (MB)"])
+          data = {}
+          # --- MODIFICATION ICI : Ajout de peak_memory_mb dans les listes ---
+          if fp32: 
+              data["x86 FP32"] = [fp32["avg_latency_ms"], fp32["fps"], fp32["model_size_mb"], fp32["peak_memory_mb"]]
+          if x86i: 
+              data["x86 INT8"] = [x86i["avg_latency_ms"], x86i["fps"], x86i["model_size_mb"], x86i["peak_memory_mb"]]
+          if armi: 
+              data["ARM64 INT8"] = [armi["avg_latency_ms"], armi["fps"], armi["model_size_mb"], armi["peak_memory_mb"]]
 
-          ax = df.plot(kind="bar", figsize=(14,8))
-          ax.set_title("Real TFLite Edge AI Performance")
-          plt.tight_layout()
-          plt.savefig("performance_comparison.png", dpi=150)
+          if data:
+              # --- MODIFICATION ICI : Ajout de la ligne dans l'Index ---
+              df = pd.DataFrame(data, index=["Latency (ms)", "FPS", "Model Size (MB)", "Peak Memory (MB)"])
+              
+              ax = df.plot(kind="bar", figsize=(12,7), rot=0)
+              ax.set_title("Edge AI Performance Benchmark (Latency, FPS, Size, RAM)")
+              plt.tight_layout()
+              plt.savefig("performance_comparison.png", dpi=150)
 
-          report = f"""# Real Edge AI Performance Dashboard ({datetime.now().date()})
+              report = f"# 🚀 Edge AI Performance Report ({datetime.now().date()})\n\n"
+              report += df.to_markdown() + "\n\n"
+              
+              Path("final_report.md").write_text(report)
+          else:
+              print("No data found to report.")
+              Path("final_report.md").write_text("# No benchmark data found")
 
-          | Metric | x86 FP32 | x86 INT8 | ARM64 INT8 |
-          |-------|---------|----------|------------|
-          | Latency (ms) | {fp32['avg_latency_ms']:.2f} | {x86i['avg_latency_ms']:.2f} | {armi['avg_latency_ms']:.2f} |
-          | FPS | {fp32['fps']:.1f} | {x86i['fps']:.1f} | {armi['fps']:.1f} |
-          | Model Size (MB) | {fp32['model_size_mb']:.1f} | {x86i['model_size_mb']:.1f} | {armi['model_size_mb']:.1f} |
-          | Peak Memory (MB) | {fp32['peak_memory_mb']:.1f} | {x86i['peak_memory_mb']:.1f} | {armi['peak_memory_mb']:.1f} |
-          """
-
-          Path("final_report.md").write_text(report)
           EOF
+          
           python scripts/generate_report.py
+
       - name: Publish to Job Summary
         run: cat final_report.md >> $GITHUB_STEP_SUMMARY
+      
       - name: Upload Dashboard
         uses: actions/upload-artifact@v4
         with:
