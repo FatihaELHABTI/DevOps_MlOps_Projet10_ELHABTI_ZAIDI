@@ -37,15 +37,15 @@ jobs:
         env:
           GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS_JSON }}
         run: |
-          # Configuration manuelle des crédentials DVC pour le CI
-          mkdir -p ~/.dvc
-          echo "$GDRIVE_CREDENTIALS" > ~/.dvc/gdrive_service_account.json
+          # 1. On crée le fichier de crédentiels OAuth (User)
+          # Note: On le met à la racine ou dans .dvc, peu importe, tant qu'on pointe dessus
+          echo "$GDRIVE_CREDENTIALS" > gdrive_user_credentials.json
           
-          # On configure le remote localement pour utiliser ce fichier JSON
-          dvc remote modify --local ${{ env.DVC_REMOTE_NAME }} gdrive_use_service_account true
-          dvc remote modify --local ${{ env.DVC_REMOTE_NAME }} gdrive_service_account_json_file_path ~/.dvc/gdrive_service_account.json
+          # 2. On configure DVC pour utiliser OAuth (User) et NON Service Account
+          dvc remote modify --local ${{ env.DVC_REMOTE_NAME }} gdrive_use_service_account false
+          dvc remote modify --local ${{ env.DVC_REMOTE_NAME }} gdrive_user_credentials_file gdrive_user_credentials.json
           
-          # Téléchargement des modèles
+          # 3. Téléchargement
           dvc pull models.dvc
 
       - name: Upload Models Artifacts
