@@ -6,7 +6,20 @@ import psutil
 import platform
 from pathlib import Path
 import numpy as np
-from tflite_runtime.interpreter import Interpreter
+
+# --- CORRECTION ICI (Gestion hybride) ---
+try:
+    # Essayer la version légère (Raspberry Pi / ARM)
+    from tflite_runtime.interpreter import Interpreter
+except ImportError:
+    # Sinon utiliser TensorFlow complet (PC / Cloud x86)
+    try:
+        import tensorflow.lite as tflite
+        Interpreter = tflite.Interpreter
+    except ImportError:
+        raise ImportError("Ni tflite_runtime ni tensorflow ne sont installés !")
+
+# ... (le reste du code ne change pas) ...
 
 def run_benchmark(device: str = "CPU", precision: str = "fp32"):
     model_map = {
