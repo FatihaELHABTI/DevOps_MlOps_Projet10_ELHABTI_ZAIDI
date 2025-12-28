@@ -11,7 +11,7 @@ env:
   PYTHON_VERSION: "3.11"
   # ATTENTION : Mettez ici le nom de votre remote DVC 
   # (celui que vous voyez en tapant 'dvc remote list' dans votre terminal)
-  DVC_REMOTE_NAME: "new_gdrive" 
+  DVC_REMOTE_NAME: "vdrive" 
 
 jobs:
   # -----------------------------------------------------------
