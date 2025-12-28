@@ -1,0 +1,240 @@
+name: MLOps Edge AI - Real TFLite Models Dashboard
+
+on:
+  push:
+    branches: [ feature/add ]
+  pull_request:
+    branches: [ feature/add ]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"
+  # ATTENTION : Mettez ici le nom de votre remote DVC 
+  # (celui que vous voyez en tapant 'dvc remote list' dans votre terminal)
+  DVC_REMOTE_NAME: "new_gdrive" 
+
+jobs:
+  # -----------------------------------------------------------
+  # JOB 1 : PRÉPARATION ET TÉLÉCHARGEMENT DES DONNÉES (DVC)
+  # -----------------------------------------------------------
+  setup-and-data:
+    name: 1. Data & Environment Setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install DVC
+        run: pip install "dvc[gdrive]"
+
+      - name: Pull Models from DVC
+        env:
+          GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS_JSON }}
+        run: |
+          # Configuration manuelle des crédentials DVC pour le CI
+          mkdir -p ~/.dvc
+          echo "$GDRIVE_CREDENTIALS" > ~/.dvc/gdrive_service_account.json
+          
+          # On configure le remote localement pour utiliser ce fichier JSON
+          dvc remote modify --local ${{ env.DVC_REMOTE_NAME }} gdrive_use_service_account true
+          dvc remote modify --local ${{ env.DVC_REMOTE_NAME }} gdrive_service_account_json_file_path ~/.dvc/gdrive_service_account.json
+          
+          # Téléchargement des modèles
+          dvc pull models.dvc || echo "⚠️ DVC pull failed, checking if models exist anyway..."
+
+      - name: Upload Models Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-models
+          path: models/
+
+  # -----------------------------------------------------------
+  # JOB 2 : BENCHMARK SUR SERVEUR CLOUD (x86) - Modèle Lourd
+  # -----------------------------------------------------------
+  benchmark-x86-fp32:
+    name: 2. x86 Cloud - FP32
+    needs: setup-and-data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: edge-models
+          path: models/
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Dependencies (TensorFlow CPU)
+        run: |
+          pip install "numpy<2" psutil
+          # Sur x86, on utilise tensorflow-cpu car tflite-runtime est difficile à installer
+          pip install tensorflow-cpu 
+      - name: Run Benchmark
+        run: |
+          mkdir -p results
+          python benchmark.py \
+            --output results/x86_fp32.json \
+            --device "x86 Cloud" \
+            --precision fp32
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x86-fp32-results
+          path: results/x86_fp32.json
+
+  # -----------------------------------------------------------
+  # JOB 3 : BENCHMARK SUR SERVEUR CLOUD (x86) - Modèle Optimisé
+  # -----------------------------------------------------------
+  benchmark-x86-int8:
+    name: 3. x86 Cloud - INT8
+    needs: setup-and-data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: edge-models
+          path: models/
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Dependencies (TensorFlow CPU)
+        run: |
+          pip install "numpy<2" psutil
+          # Sur x86, on utilise tensorflow-cpu
+          pip install tensorflow-cpu
+      - name: Run Benchmark
+        run: |
+          mkdir -p results
+          python benchmark.py \
+            --output results/x86_int8.json \
+            --device "x86 Cloud" \
+            --precision int8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x86-int8-results
+          path: results/x86_int8.json
+
+  # -----------------------------------------------------------
+  # JOB 4 : BENCHMARK SUR ARM64 (Simulation Raspberry Pi)
+  # Note: Nécessite des runners ARM disponibles sur GitHub
+  # -----------------------------------------------------------
+  benchmark-arm64-int8:
+    name: 4. ARM64 Edge - INT8 (Native)
+    needs: setup-and-data
+    # Utilisation d'un runner ARM (si disponible pour votre compte)
+    # Si cela échoue, changez en 'ubuntu-latest' pour tester
+    runs-on: ubuntu-24.04-arm 
+    continue-on-error: true # Ne pas bloquer si pas de runner ARM dispo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: edge-models
+          path: models/
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Dependencies (TFLite Runtime)
+        run: |
+          pip install "numpy<2" psutil
+          # Sur ARM, tflite-runtime est disponible et recommandé
+          pip install tflite-runtime
+      - name: Run Benchmark
+        run: |
+          mkdir -p results
+          python benchmark.py \
+            --output results/arm64_int8.json \
+            --device "ARM64 Edge" \
+            --precision int8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm64-int8-results
+          path: results/arm64_int8.json
+
+  # -----------------------------------------------------------
+  # JOB 5 : GÉNÉRATION DU RAPPORT FINAL
+  # -----------------------------------------------------------
+  reporting:
+    name: 5. Real Performance Dashboard
+    needs:
+      - benchmark-x86-fp32
+      - benchmark-x86-int8
+      - benchmark-arm64-int8
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Dependencies
+        run: pip install matplotlib pandas
+      - name: Download All Results
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results/
+      - name: Generate Report & Chart
+        run: |
+          mkdir -p scripts
+          # Création du script de rapport à la volée
+          cat <<'EOF' > scripts/generate_report.py
+          import json
+          import pandas as pd
+          import matplotlib.pyplot as plt
+          from pathlib import Path
+          from datetime import datetime
+          import os
+
+          def load(path):
+              if os.path.exists(path):
+                  with open(path) as f:
+                      return json.load(f)
+              return None
+
+          # Chargement des résultats
+          fp32 = load("all-results/x86-fp32-results/x86_fp32.json")
+          x86i = load("all-results/x86-int8-results/x86_int8.json")
+          armi = load("all-results/arm64-int8-results/arm64_int8.json")
+
+          data = {}
+          if fp32: data["x86 FP32"] = [fp32["avg_latency_ms"], fp32["fps"], fp32["model_size_mb"]]
+          if x86i: data["x86 INT8"] = [x86i["avg_latency_ms"], x86i["fps"], x86i["model_size_mb"]]
+          if armi: data["ARM64 INT8"] = [armi["avg_latency_ms"], armi["fps"], armi["model_size_mb"]]
+
+          if data:
+              df = pd.DataFrame(data, index=["Latency (ms)", "FPS", "Model Size (MB)"])
+              
+              # Génération du graphique
+              ax = df.plot(kind="bar", figsize=(10,6), rot=0)
+              ax.set_title("Edge AI Performance Benchmark")
+              plt.tight_layout()
+              plt.savefig("performance_comparison.png", dpi=150)
+
+              # Génération du Markdown
+              report = f"# 🚀 Edge AI Performance Report ({datetime.now().date()})\n\n"
+              report += df.to_markdown() + "\n\n"
+              
+              Path("final_report.md").write_text(report)
+          else:
+              print("No data found to report.")
+              Path("final_report.md").write_text("# No benchmark data found")
+
+          EOF
+          
+          python scripts/generate_report.py
+
+      - name: Publish to Job Summary
+        run: cat final_report.md >> $GITHUB_STEP_SUMMARY
+      
+      - name: Upload Dashboard
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-dashboard
+          path: |
+            performance_comparison.png
+            final_report.md

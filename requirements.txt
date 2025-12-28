@@ -9,3 +9,5 @@ requests
 matplotlib
 dvc 
 dvc-gdrive
+psutil
+numpy
