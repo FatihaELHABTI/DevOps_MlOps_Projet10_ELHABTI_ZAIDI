@@ -207,7 +207,7 @@ jobs:
               plt.tight_layout()
               plt.savefig("performance_comparison.png", dpi=150)
 
-              report = f"# 🚀 Edge AI Performance Report ({datetime.now().date()})\n\n"
+              report = f"# Edge AI Performance Report ({datetime.now().date()})\n\n"
               report += df.to_markdown() + "\n\n"
               
               Path("final_report.md").write_text(report)
