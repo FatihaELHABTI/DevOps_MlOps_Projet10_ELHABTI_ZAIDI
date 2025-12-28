@@ -46,7 +46,7 @@ jobs:
           dvc remote modify --local ${{ env.DVC_REMOTE_NAME }} gdrive_service_account_json_file_path ~/.dvc/gdrive_service_account.json
           
           # Téléchargement des modèles
-          dvc pull models.dvc "
+          dvc pull models.dvc
 
       - name: Upload Models Artifacts
         uses: actions/upload-artifact@v4
