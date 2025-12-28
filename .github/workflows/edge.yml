@@ -173,7 +173,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install Dependencies
-        run: pip install matplotlib pandas
+        run: pip install matplotlib pandas tabulate
       - name: Download All Results
         uses: actions/download-artifact@v4
         with:
