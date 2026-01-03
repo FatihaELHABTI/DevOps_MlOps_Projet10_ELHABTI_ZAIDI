@@ -10,3 +10,29 @@ data/         <-- On ignore la vidéo et les images (trop lourd / copyright)
 # --- MODÈLES ---
 # models/*.tflite  <-- EFFACEZ OU COMMENTEZ CETTE LIGNE !
 # On veut que les modèles soient sur GitHub
+/data
+/datasets
+/models
+
+/.dvc/config
+/.dvc/vdrive-creds.json
+vdrive-creds.json
+venv
+
+.dvc/cache/
+.dvc/tmp/
+.dvc/config.local
+.dvc/*-creds.json
+.dvc/vdrive-creds.json
+*-creds.json
+*.credentials
+
+# Fichiers temporaires
+.dvc/tmp/
+.dvc/lock
+
+# Notebooks
+notebooks/mlruns/
+
+.vscode/
+.idea/
