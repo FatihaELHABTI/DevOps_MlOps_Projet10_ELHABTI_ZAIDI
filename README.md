@@ -5,11 +5,15 @@
 ## Aperçu du Projet
 Ce projet porte sur le déploiement de modèles d'IA optimisés sur des dispositifs edge à ressources limitées pour la détection en temps réel d'intrusions humaines dans des applications de sécurité. Il illustre une approche **AIoT** (Artificial Intelligence of Things) en optimisant le modèle **SSD MobileNet V2** via une quantification post-entraînement (Int8) afin de réduire la taille du modèle et la latence d'inférence.
 
+<img width="842" height="399" alt="image" src="https://github.com/user-attachments/assets/73e053d2-591e-4bdf-9937-dab05e7d2453" />
+
 Le système simule un environnement Raspberry Pi à l'aide de conteneurs Docker avec limitations CPU. Il intègre une API FastAPI pour l'inférence, un dashboard Streamlit pour le monitoring et les mises à jour OTA, ainsi que MLflow pour le suivi du cycle de vie des modèles.
 
 Les résultats valident qu'un modèle quantifié (4 Mo) est 2 à 3 fois plus rapide (11 FPS) que la version originale (11 Mo, 4 FPS) en environnement contraint, tout en maintenant une précision acceptable.
 
 **Mots-clés :** Edge Computing, Quantification Int8, SSD MobileNet V2, TensorFlow Lite, FastAPI, Streamlit, MLflow, OTA, Docker, AIoT, MLOps.
+
+<img width="870" height="486" alt="image" src="https://github.com/user-attachments/assets/a294229a-964d-49d8-b17b-0bd4daa8a4be" />
 
 
 ## Fonctionnalités Principales
@@ -94,6 +98,9 @@ Si toutes les conditions passent → Deploy to Production
 En cas de succès :
 
 Intégration avec MLflow Tracking pour logger les métriques, paramètres et artefacts
+
+<img width="850" height="403" alt="image" src="https://github.com/user-attachments/assets/65174501-cc28-4231-8967-0e4eb8fb7490" />
+
 Déploiement du modèle validé sur la flotte de production
 Mise à jour Over-The-Air (OTA) sur 50 Raspberry Pi simultanément
 
